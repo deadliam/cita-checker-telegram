@@ -131,25 +131,138 @@ def set_keyboard_layout():
         logging.warning("Skipping keyboard layout change (setxkbmap failed): %s", error)
 
 
-def get_effective_driver_version():
-    # This container image usually ships Brave/Chromium 72.x.
-    # Auto-fallback to a compatible driver unless user explicitly configures one.
+def detect_browser_version(binary_path):
+    try:
+        version_output = subprocess.check_output(
+            [binary_path, "--version"], stderr=subprocess.STDOUT
+        ).decode("utf-8", errors="replace")
+        return version_output.strip()
+    except Exception:
+        return ""
+
+
+def get_effective_browser_binary():
+    configured_binary = BRAVE_BINARY_LOCATION
+    configured_version = detect_browser_version(configured_binary)
+    google_chrome_path = "/usr/bin/google-chrome"
+
+    if configured_version and "Brave Browser 72." in configured_version and os.path.exists(google_chrome_path):
+        google_version = detect_browser_version(google_chrome_path)
+        if google_version:
+            logging.warning(
+                "Configured browser is legacy (%s). Switching to %s (%s).",
+                configured_version,
+                google_chrome_path,
+                google_version,
+            )
+            return google_chrome_path, google_version
+
+    if configured_version:
+        return configured_binary, configured_version
+
+    for candidate in [google_chrome_path, "/usr/bin/chromium-browser", "/usr/bin/chromium", "/usr/bin/brave-browser"]:
+        if os.path.exists(candidate):
+            candidate_version = detect_browser_version(candidate)
+            if candidate_version:
+                logging.warning("Configured browser not usable. Falling back to %s (%s).", candidate, candidate_version)
+                return candidate, candidate_version
+
+    return configured_binary, ""
+
+
+def get_effective_driver_version(browser_version_text):
+    # Auto-pick compatible driver unless user explicitly configures one.
     if CHROMEDRIVER_VERSION.lower() != "latest":
         return CHROMEDRIVER_VERSION
     try:
-        version_output = subprocess.check_output(
-            [BRAVE_BINARY_LOCATION, "--version"], stderr=subprocess.STDOUT
-        ).decode("utf-8", errors="replace")
-        if "72." in version_output:
+        if "72." in browser_version_text:
             logging.warning(
-                "Detected legacy Brave/Chromium version (%s). "
+                "Detected legacy browser version (%s). "
                 "Using chromedriver 72.0.3626.69 for compatibility.",
-                version_output.strip(),
+                browser_version_text,
             )
             return "72.0.3626.69"
     except Exception as error:
         logging.warning("Could not detect browser version (%s). Using chromedriver=%s", error, CHROMEDRIVER_VERSION)
     return CHROMEDRIVER_VERSION
+
+
+def check_for_appointments():
+    try:
+        effective_browser_binary, browser_version_text = get_effective_browser_binary()
+        effective_driver_version = get_effective_driver_version(browser_version_text)
+        logging.info("Using browser binary: %s", effective_browser_binary)
+        if browser_version_text:
+            logging.info("Detected browser version: %s", browser_version_text)
+
+        chromium_args = (
+            "--no-sandbox,"
+            "--disable-setuid-sandbox,"
+            "--disable-dev-shm-usage,"
+            "--disable-gpu,"
+            "--disable-software-rasterizer,"
+            "--disable-extensions,"
+            "--disable-infobars,"
+            "--no-zygote,"
+            "--single-process,"
+            "--remote-debugging-port=9222,"
+            "--user-data-dir=/tmp/chrome-user-data,"
+            "--data-path=/tmp/chrome-data,"
+            "--disk-cache-dir=/tmp/chrome-cache"
+        )
+        if HEADLESS:
+            # Legacy Chromium 72 does not support --headless=new.
+            chromium_args += ",--headless,--window-size=1366,768"
+        with SB(
+            browser="chrome",
+            binary_location=effective_browser_binary,
+            headed=not HEADLESS,
+            headless=HEADLESS,
+            use_auto_ext=SB_USE_AUTO_EXT,
+            slow=SB_SLOW,
+            demo=SB_DEMO,
+            incognito=True,
+            driver_version=effective_driver_version,
+            chromium_arg=chromium_args,
+        ) as sb:
+            set_random_window_size(sb)
+            sleep(2)
+            sb.open(config["url"])
+            sleep(2)
+            sb.click("#form")
+            sleep(2)
+            sb.select_option_by_text("#form", config["region"])
+            sleep(2)
+            sb.click("#btnAceptar")
+            sb.select_option_by_text("#tramiteGrupo\\[0\\]", config["tramiteOptionText"])
+            sb.click("#btnAceptar")
+            sleep(2)
+            sb.click("#btnEntrar")
+            sb.find_element(By.ID, "rdbTipoDocPas").click()
+            sb.type("#txtIdCitado", config["idCitadoValue"])
+            sleep(2)
+            sb.type("#txtDesCitado", config["desCitadoValue"])
+            sleep(2)
+            sb.click("#btnEnviar")
+            sleep(2)
+            sb.click("#btnEnviar")
+            sleep(2)
+
+            if sb.is_text_visible("En este momento no hay citas disponibles"):
+                logging.info("No available appointments. Next check in %s seconds.", CHECK_INTERVAL_SECONDS)
+                find_and_kill()
+                return "retry"
+
+            sb.set_window_size(1280, 1024)
+            sb.save_screenshot(SCREENSHOT_PATH)
+            notify_appointment_found()
+            logging.info("Appointments might be available. Holding browser for %s seconds.", APPOINTMENT_HOLD_SECONDS)
+            time.sleep(APPOINTMENT_HOLD_SECONDS)
+            return "manual_check_needed"
+    except Exception as error:
+        logging.error("Encountered an error during the check: %s. Retrying later.", error)
+        find_and_kill()
+        return "error"
 
 
 def setup_logging():
@@ -311,77 +424,6 @@ def set_random_window_size(sb):
     sb.set_window_size(width, height)
 
 
-def check_for_appointments():
-    try:
-        effective_driver_version = get_effective_driver_version()
-        chromium_args = (
-            "--no-sandbox,"
-            "--disable-setuid-sandbox,"
-            "--disable-dev-shm-usage,"
-            "--disable-gpu,"
-            "--disable-software-rasterizer,"
-            "--disable-extensions,"
-            "--disable-infobars,"
-            "--no-zygote,"
-            "--single-process,"
-            "--remote-debugging-port=9222,"
-            "--user-data-dir=/tmp/chrome-user-data,"
-            "--data-path=/tmp/chrome-data,"
-            "--disk-cache-dir=/tmp/chrome-cache"
-        )
-        if HEADLESS:
-            # Legacy Chromium 72 does not support --headless=new.
-            chromium_args += ",--headless,--window-size=1366,768"
-        with SB(
-            browser="chrome",
-            binary_location=BRAVE_BINARY_LOCATION,
-            headed=not HEADLESS,
-            headless=HEADLESS,
-            use_auto_ext=SB_USE_AUTO_EXT,
-            slow=SB_SLOW,
-            demo=SB_DEMO,
-            incognito=True,
-            driver_version=effective_driver_version,
-            chromium_arg=chromium_args,
-        ) as sb:
-            set_random_window_size(sb)
-            sleep(2)
-            sb.open(config["url"])
-            sleep(2)
-            sb.click("#form")
-            sleep(2)
-            sb.select_option_by_text("#form", config["region"])
-            sleep(2)
-            sb.click("#btnAceptar")
-            sb.select_option_by_text("#tramiteGrupo\\[0\\]", config["tramiteOptionText"])
-            sb.click("#btnAceptar")
-            sleep(2)
-            sb.click("#btnEntrar")
-            sb.find_element(By.ID, "rdbTipoDocPas").click()
-            sb.type("#txtIdCitado", config["idCitadoValue"])
-            sleep(2)
-            sb.type("#txtDesCitado", config["desCitadoValue"])
-            sleep(2)
-            sb.click("#btnEnviar")
-            sleep(2)
-            sb.click("#btnEnviar")
-            sleep(2)
-
-            if sb.is_text_visible("En este momento no hay citas disponibles"):
-                logging.info("No available appointments. Next check in %s seconds.", CHECK_INTERVAL_SECONDS)
-                find_and_kill()
-                return "retry"
-
-            sb.set_window_size(1280, 1024)
-            sb.save_screenshot(SCREENSHOT_PATH)
-            notify_appointment_found()
-            logging.info("Appointments might be available. Holding browser for %s seconds.", APPOINTMENT_HOLD_SECONDS)
-            time.sleep(APPOINTMENT_HOLD_SECONDS)
-            return "manual_check_needed"
-    except Exception as error:
-        logging.error("Encountered an error during the check: %s. Retrying later.", error)
-        find_and_kill()
-        return "error"
 
 
 def format_status():
