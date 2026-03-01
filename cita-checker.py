@@ -10,6 +10,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+import pwd
 from email.message import EmailMessage
 from time import sleep
 
@@ -39,6 +40,28 @@ def load_config():
         "Could not find values.json. Checked: "
         + ", ".join([path for path in candidates if path])
     )
+
+
+def ensure_runtime_home():
+    uid = os.getuid()
+    try:
+        system_home = pwd.getpwuid(uid).pw_dir
+    except Exception:
+        system_home = "/home/nonroot"
+
+    preferred_home = system_home if os.path.isdir(system_home) else "/home/nonroot"
+    os.environ["HOME"] = preferred_home
+    os.environ["XDG_CONFIG_HOME"] = os.path.join(preferred_home, ".config")
+    os.environ["XDG_CACHE_HOME"] = os.path.join(preferred_home, ".cache")
+    os.environ["XDG_DATA_HOME"] = os.path.join(preferred_home, ".local", "share")
+
+    for path in (
+        os.environ["XDG_CONFIG_HOME"],
+        os.environ["XDG_CACHE_HOME"],
+        os.environ["XDG_DATA_HOME"],
+        os.path.join(os.environ["XDG_CACHE_HOME"], "selenium"),
+    ):
+        os.makedirs(path, exist_ok=True)
 
 
 config = load_config()
@@ -133,10 +156,15 @@ def set_keyboard_layout():
 
 def detect_browser_version(binary_path):
     try:
+        env = os.environ.copy()
         version_output = subprocess.check_output(
-            [binary_path, "--version"], stderr=subprocess.STDOUT
+            [binary_path, "--version"], stderr=subprocess.STDOUT, env=env
         ).decode("utf-8", errors="replace")
-        return version_output.strip()
+        lines = [line.strip() for line in version_output.splitlines() if line.strip()]
+        for line in reversed(lines):
+            if "Brave Browser" in line or "Google Chrome" in line or "Chromium" in line:
+                return line
+        return lines[-1] if lines else ""
     except Exception:
         return ""
 
@@ -627,6 +655,7 @@ def run_checker_loop():
 
 def main():
     setup_logging()
+    ensure_runtime_home()
     ensure_display_env()
     set_keyboard_layout()
     config_warnings = validate_config()
