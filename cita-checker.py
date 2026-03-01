@@ -49,6 +49,9 @@ TELEGRAM_POLL_TIMEOUT = int(config.get("telegram_poll_timeout_seconds", 30))
 HEADLESS = bool(config.get("headless", True))
 CHROMEDRIVER_VERSION = str(config.get("chromedriver_version", "latest")).strip() or "latest"
 BRAVE_BINARY_LOCATION = str(config.get("brave_binary_location", "/usr/bin/brave-browser")).strip()
+SB_USE_AUTO_EXT = bool(config.get("sb_use_auto_ext", False))
+SB_SLOW = bool(config.get("sb_slow", False))
+SB_DEMO = bool(config.get("sb_demo", False))
 
 telegram_bot_token = config.get("telegram_bot_token", "").strip()
 telegram_default_chat_id = str(config.get("telegram_chat_id", "")).strip()
@@ -311,20 +314,21 @@ def set_random_window_size(sb):
 def check_for_appointments():
     try:
         effective_driver_version = get_effective_driver_version()
+        chromium_args = "--no-sandbox,--disable-dev-shm-usage,--disable-gpu,--remote-debugging-port=9222"
+        if HEADLESS:
+            # Legacy Chromium 72 does not support --headless=new.
+            chromium_args += ",--headless,--window-size=1366,768"
         with SB(
             browser="chrome",
             binary_location=BRAVE_BINARY_LOCATION,
             headed=not HEADLESS,
             headless=HEADLESS,
-            use_auto_ext=True,
-            slow=True,
-            demo=True,
+            use_auto_ext=SB_USE_AUTO_EXT,
+            slow=SB_SLOW,
+            demo=SB_DEMO,
             incognito=True,
             driver_version=effective_driver_version,
-            chromium_arg=(
-                "--no-sandbox,--disable-dev-shm-usage,--disable-gpu,"
-                "--remote-debugging-port=9222,--window-size=1366,768,--headless=new"
-            ) if HEADLESS else "--no-sandbox,--disable-dev-shm-usage,--disable-gpu,--remote-debugging-port=9222",
+            chromium_arg=chromium_args,
         ) as sb:
             set_random_window_size(sb)
             sleep(2)
