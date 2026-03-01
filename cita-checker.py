@@ -175,6 +175,13 @@ def get_effective_driver_version(browser_version_text):
     if CHROMEDRIVER_VERSION.lower() != "latest":
         return CHROMEDRIVER_VERSION
     try:
+        if "89." in browser_version_text:
+            logging.warning(
+                "Detected Chrome version (%s). "
+                "Using chromedriver 89.0.4389.23 for compatibility.",
+                browser_version_text,
+            )
+            return "89.0.4389.23"
         if "72." in browser_version_text:
             logging.warning(
                 "Detected legacy browser version (%s). "
