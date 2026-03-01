@@ -50,6 +50,16 @@ state_lock = threading.Lock()
 check_now_event = threading.Event()
 
 
+def ensure_display_env():
+    # Allow docker exec sessions (without inherited DISPLAY) to still launch browser.
+    if os.environ.get("DISPLAY"):
+        return
+    for candidate in (":99", ":1", ":0"):
+        os.environ["DISPLAY"] = candidate
+        logging.warning("DISPLAY was not set. Falling back to DISPLAY=%s", candidate)
+        return
+
+
 def validate_config():
     warnings = []
 
@@ -98,7 +108,7 @@ def set_keyboard_layout():
         subprocess.run(["setxkbmap", "-layout", keyboard_layout], check=True)
         logging.info("Keyboard layout set to %s.", keyboard_layout)
     except subprocess.CalledProcessError as error:
-        logging.error("Error setting keyboard layout: %s", error)
+        logging.warning("Skipping keyboard layout change (setxkbmap failed): %s", error)
 
 
 def setup_logging():
@@ -233,16 +243,17 @@ def set_random_window_size(sb):
 
 
 def check_for_appointments():
-    with SB(
-        browser="chrome",
-        binary_location="/usr/bin/brave-browser",
-        headed=True,
-        use_auto_ext=True,
-        slow=True,
-        demo=True,
-        incognito=True,
-    ) as sb:
-        try:
+    try:
+        with SB(
+            browser="chrome",
+            binary_location="/usr/bin/brave-browser",
+            headed=True,
+            use_auto_ext=True,
+            slow=True,
+            demo=True,
+            incognito=True,
+            chromium_arg="--no-sandbox,--disable-dev-shm-usage,--disable-gpu,--remote-debugging-port=9222",
+        ) as sb:
             set_random_window_size(sb)
             sleep(2)
             sb.open(config["url"])
@@ -277,10 +288,10 @@ def check_for_appointments():
             logging.info("Appointments might be available. Holding browser for %s seconds.", APPOINTMENT_HOLD_SECONDS)
             time.sleep(APPOINTMENT_HOLD_SECONDS)
             return "manual_check_needed"
-        except Exception as error:
-            logging.error("Encountered an error during the check: %s. Retrying later.", error)
-            find_and_kill()
-            return "error"
+    except Exception as error:
+        logging.error("Encountered an error during the check: %s. Retrying later.", error)
+        find_and_kill()
+        return "error"
 
 
 def format_status():
@@ -459,6 +470,7 @@ def run_checker_loop():
 
 def main():
     setup_logging()
+    ensure_display_env()
     set_keyboard_layout()
     config_warnings = validate_config()
     if config_warnings:
