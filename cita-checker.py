@@ -32,6 +32,9 @@ config = load_config()
 CHECK_INTERVAL_SECONDS = int(config.get("check_interval_seconds", 600))
 APPOINTMENT_HOLD_SECONDS = int(config.get("appointment_hold_seconds", 600))
 TELEGRAM_POLL_TIMEOUT = int(config.get("telegram_poll_timeout_seconds", 30))
+HEADLESS = bool(config.get("headless", True))
+CHROMEDRIVER_VERSION = str(config.get("chromedriver_version", "latest")).strip() or "latest"
+BRAVE_BINARY_LOCATION = str(config.get("brave_binary_location", "/usr/bin/brave-browser")).strip()
 
 telegram_bot_token = config.get("telegram_bot_token", "").strip()
 telegram_default_chat_id = str(config.get("telegram_chat_id", "")).strip()
@@ -274,13 +277,18 @@ def check_for_appointments():
     try:
         with SB(
             browser="chrome",
-            binary_location="/usr/bin/brave-browser",
-            headed=True,
+            binary_location=BRAVE_BINARY_LOCATION,
+            headed=not HEADLESS,
+            headless=HEADLESS,
             use_auto_ext=True,
             slow=True,
             demo=True,
             incognito=True,
-            chromium_arg="--no-sandbox,--disable-dev-shm-usage,--disable-gpu,--remote-debugging-port=9222",
+            driver_version=CHROMEDRIVER_VERSION,
+            chromium_arg=(
+                "--no-sandbox,--disable-dev-shm-usage,--disable-gpu,"
+                "--remote-debugging-port=9222,--window-size=1366,768,--headless=new"
+            ) if HEADLESS else "--no-sandbox,--disable-dev-shm-usage,--disable-gpu,--remote-debugging-port=9222",
         ) as sb:
             set_random_window_size(sb)
             sleep(2)
