@@ -78,10 +78,8 @@ EOF
 chmod +x /home/nonroot/run-cita-checker.sh
 chown nonroot:nonroot /home/nonroot/run-cita-checker.sh
 
-# Register cita checker in supervisord (auto-start + restart)
-if ! grep -q "^\[program:cita-checker\]" /etc/supervisor/conf.d/supervisord.conf; then
-cat >> /etc/supervisor/conf.d/supervisord.conf <<'EOF'
-
+# Register cita checker in a dedicated supervisord config (auto-start + restart)
+cat > /etc/supervisor/conf.d/cita-checker.conf <<'EOF'
 [program:cita-checker]
 command=/home/nonroot/run-cita-checker.sh
 autostart=true
@@ -92,7 +90,6 @@ stdout_logfile=/tmp/cita-checker.out
 stderr_logfile=/tmp/cita-checker.err
 priority=20
 EOF
-fi
 
 # Ensure virtual environment is activated for Python scripts
 echo "source /home/nonroot/venv/bin/activate" >> /home/nonroot/.bashrc
