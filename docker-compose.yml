@@ -23,4 +23,4 @@ services:
       - ./values.json:/home/nonroot/values.json
     entrypoint: ["/bin/bash", "-lc"]
     command:
-      - "rm -rf /home/nonroot/venv; python3 -m venv /home/nonroot/venv; /home/nonroot/venv/bin/python3 -m ensurepip --upgrade; /home/nonroot/venv/bin/python3 -m pip install --disable-pip-version-check --upgrade pip setuptools wheel; /home/nonroot/venv/bin/python3 -m pip install --disable-pip-version-check seleniumbase webdriver-manager; exec env DISPLAY=:99 /home/nonroot/venv/bin/python3 /home/nonroot/cita-checker.py"
+      - "rm -rf /home/nonroot/venv; python3 -m venv /home/nonroot/venv; /home/nonroot/venv/bin/python3 -m ensurepip --upgrade; /home/nonroot/venv/bin/python3 -m pip install --disable-pip-version-check --upgrade pip setuptools wheel; /home/nonroot/venv/bin/python3 -m pip install --disable-pip-version-check seleniumbase webdriver-manager; if command -v Xvfb >/dev/null 2>&1; then Xvfb :99 -screen 0 1366x768x24 -nolisten tcp >/tmp/xvfb-runner.log 2>&1 & sleep 2; fi; exec env DISPLAY=:99 /home/nonroot/venv/bin/python3 /home/nonroot/cita-checker.py"
