@@ -23,8 +23,22 @@ LOG_PATH = "/tmp/events.log"
 
 
 def load_config():
-    with open(CONFIG_PATH) as config_file:
-        return json.load(config_file)
+    env_config = os.environ.get("CITA_CONFIG_PATH", "").strip()
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        env_config,
+        CONFIG_PATH,
+        os.path.join(script_dir, "values.json"),
+        "/home/nonroot/values.json",
+    ]
+    for path in candidates:
+        if path and os.path.exists(path):
+            with open(path) as config_file:
+                return json.load(config_file)
+    raise FileNotFoundError(
+        "Could not find values.json. Checked: "
+        + ", ".join([path for path in candidates if path])
+    )
 
 
 config = load_config()
