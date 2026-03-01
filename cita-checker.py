@@ -128,6 +128,27 @@ def set_keyboard_layout():
         logging.warning("Skipping keyboard layout change (setxkbmap failed): %s", error)
 
 
+def get_effective_driver_version():
+    # This container image usually ships Brave/Chromium 72.x.
+    # Auto-fallback to a compatible driver unless user explicitly configures one.
+    if CHROMEDRIVER_VERSION.lower() != "latest":
+        return CHROMEDRIVER_VERSION
+    try:
+        version_output = subprocess.check_output(
+            [BRAVE_BINARY_LOCATION, "--version"], stderr=subprocess.STDOUT
+        ).decode("utf-8", errors="replace")
+        if "72." in version_output:
+            logging.warning(
+                "Detected legacy Brave/Chromium version (%s). "
+                "Using chromedriver 72.0.3626.69 for compatibility.",
+                version_output.strip(),
+            )
+            return "72.0.3626.69"
+    except Exception as error:
+        logging.warning("Could not detect browser version (%s). Using chromedriver=%s", error, CHROMEDRIVER_VERSION)
+    return CHROMEDRIVER_VERSION
+
+
 def setup_logging():
     logging.basicConfig(
         level=logging.INFO,
@@ -289,6 +310,7 @@ def set_random_window_size(sb):
 
 def check_for_appointments():
     try:
+        effective_driver_version = get_effective_driver_version()
         with SB(
             browser="chrome",
             binary_location=BRAVE_BINARY_LOCATION,
@@ -298,7 +320,7 @@ def check_for_appointments():
             slow=True,
             demo=True,
             incognito=True,
-            driver_version=CHROMEDRIVER_VERSION,
+            driver_version=effective_driver_version,
             chromium_arg=(
                 "--no-sandbox,--disable-dev-shm-usage,--disable-gpu,"
                 "--remote-debugging-port=9222,--window-size=1366,768,--headless=new"
