@@ -11,5 +11,12 @@
   "smtp_server": "your_smtp_server.com",
   "smtp_port": 587,
   "keyboard_layout": "your_keyboard_layout",
-  "region": "your_region"
+  "region": "your_region",
+  "checker_enabled_on_startup": true,
+  "check_interval_seconds": 600,
+  "appointment_hold_seconds": 600,
+  "telegram_poll_timeout_seconds": 30,
+  "telegram_bot_token": "123456789:YOUR_TELEGRAM_BOT_TOKEN",
+  "telegram_chat_id": "123456789",
+  "telegram_allowed_chat_ids": ["123456789"]
 }
