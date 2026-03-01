@@ -208,7 +208,9 @@ def send_telegram_message(message, chat_id=None):
     if not target_chat_id:
         logging.info("No telegram_chat_id configured. Skipping Telegram message.")
         return
-    telegram_api_call("sendMessage", {"chat_id": target_chat_id, "text": message})
+    response = telegram_api_call("sendMessage", {"chat_id": target_chat_id, "text": message})
+    if response and not response.get("ok", False):
+        logging.error("Telegram sendMessage failed: %s", response)
 
 
 def send_telegram_photo(caption, file_path, chat_id=None):
@@ -221,12 +223,38 @@ def send_telegram_photo(caption, file_path, chat_id=None):
     if not os.path.exists(file_path):
         logging.info("Screenshot not found at %s. Skipping Telegram photo.", file_path)
         return
-    telegram_api_call(
+    response = telegram_api_call(
         "sendPhoto",
         {"chat_id": target_chat_id, "caption": caption},
         file_field_name="photo",
         file_path=file_path,
     )
+    if response and not response.get("ok", False):
+        logging.error("Telegram sendPhoto failed: %s", response)
+
+
+def initialize_telegram():
+    if not telegram_bot_token:
+        return
+
+    me = telegram_api_call("getMe")
+    if not me or not me.get("ok"):
+        logging.error("Telegram getMe failed. Check telegram_bot_token.")
+        return
+
+    bot_info = me.get("result", {})
+    logging.info(
+        "Telegram bot authenticated: username=@%s id=%s",
+        bot_info.get("username", "unknown"),
+        bot_info.get("id", "unknown"),
+    )
+
+    # Ensure long polling works even if a webhook was configured before.
+    delete_webhook = telegram_api_call("deleteWebhook", {"drop_pending_updates": False})
+    if delete_webhook and delete_webhook.get("ok"):
+        logging.info("Telegram webhook cleared for long polling mode.")
+    else:
+        logging.warning("Could not clear Telegram webhook. Long polling may fail: %s", delete_webhook)
 
 
 def notify_appointment_found():
@@ -337,6 +365,10 @@ def handle_telegram_command(text, chat_id):
         send_telegram_message("pong", chat_id=chat_id)
         return
 
+    if command == "/id":
+        send_telegram_message(f"chat_id={chat_id}", chat_id=chat_id)
+        return
+
     if command in ("/start", "/start_checker"):
         with state_lock:
             state["checker_enabled"] = True
@@ -379,6 +411,7 @@ def handle_telegram_command(text, chat_id):
         send_telegram_message(
             "Commands:\n"
             "/ping - health check\n"
+            "/id - show current chat id\n"
             "/start or /start_checker - enable checks\n"
             "/stop - disable automatic checks\n"
             "/check_now - run one check now\n"
@@ -405,7 +438,11 @@ def run_telegram_bot_loop():
             params["offset"] = offset
 
         response = telegram_api_call("getUpdates", params)
-        if not response or not response.get("ok"):
+        if not response:
+            time.sleep(2)
+            continue
+        if not response.get("ok"):
+            logging.error("Telegram getUpdates failed: %s", response)
             time.sleep(2)
             continue
 
@@ -483,6 +520,7 @@ def main():
         state["next_check_at"] = time.time()
 
     if telegram_bot_token:
+        initialize_telegram()
         bot_thread = threading.Thread(target=run_telegram_bot_loop, daemon=True)
         bot_thread.start()
         send_telegram_message(
