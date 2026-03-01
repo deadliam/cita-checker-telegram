@@ -56,7 +56,42 @@ fi
 # Create a Python virtual environment for nonroot user if it doesn't exist
 if [ ! -d "/home/nonroot/venv" ]; then
     su - nonroot -c "python3 -m venv /home/nonroot/venv"
-    su - nonroot -c "/home/nonroot/venv/bin/pip install seleniumbase webdriver-manager"
+fi
+
+# Ensure required Python packages are available in venv
+if ! su - nonroot -c "/home/nonroot/venv/bin/python3 -c 'import seleniumbase, webdriver_manager'" >/dev/null 2>&1; then
+    su - nonroot -c "/home/nonroot/venv/bin/python3 -m ensurepip --upgrade || true"
+    su - nonroot -c "/home/nonroot/venv/bin/python3 -m pip install --upgrade pip setuptools wheel"
+    su - nonroot -c "/home/nonroot/venv/bin/python3 -m pip install seleniumbase webdriver-manager"
+fi
+
+# Create launcher script for cita checker
+cat > /home/nonroot/run-cita-checker.sh <<'EOF'
+#!/bin/bash
+set -e
+source /home/nonroot/venv/bin/activate
+if [ -z "$DISPLAY" ]; then
+    export DISPLAY=:1
+fi
+exec python3 /home/nonroot/cita-checker.py
+EOF
+chmod +x /home/nonroot/run-cita-checker.sh
+chown nonroot:nonroot /home/nonroot/run-cita-checker.sh
+
+# Register cita checker in supervisord (auto-start + restart)
+if ! grep -q "^\[program:cita-checker\]" /etc/supervisor/conf.d/supervisord.conf; then
+cat >> /etc/supervisor/conf.d/supervisord.conf <<'EOF'
+
+[program:cita-checker]
+command=/home/nonroot/run-cita-checker.sh
+autostart=true
+autorestart=true
+startsecs=5
+user=nonroot
+stdout_logfile=/tmp/cita-checker.out
+stderr_logfile=/tmp/cita-checker.err
+priority=20
+EOF
 fi
 
 # Ensure virtual environment is activated for Python scripts
