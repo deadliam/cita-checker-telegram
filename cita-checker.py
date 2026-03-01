@@ -314,7 +314,21 @@ def set_random_window_size(sb):
 def check_for_appointments():
     try:
         effective_driver_version = get_effective_driver_version()
-        chromium_args = "--no-sandbox,--disable-dev-shm-usage,--disable-gpu,--remote-debugging-port=9222"
+        chromium_args = (
+            "--no-sandbox,"
+            "--disable-setuid-sandbox,"
+            "--disable-dev-shm-usage,"
+            "--disable-gpu,"
+            "--disable-software-rasterizer,"
+            "--disable-extensions,"
+            "--disable-infobars,"
+            "--no-zygote,"
+            "--single-process,"
+            "--remote-debugging-port=9222,"
+            "--user-data-dir=/tmp/chrome-user-data,"
+            "--data-path=/tmp/chrome-data,"
+            "--disk-cache-dir=/tmp/chrome-cache"
+        )
         if HEADLESS:
             # Legacy Chromium 72 does not support --headless=new.
             chromium_args += ",--headless,--window-size=1366,768"
