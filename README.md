@@ -44,7 +44,15 @@ After accessing the noVNC interface, start the `cita-checker.py` script located 
 From personal experience Brave browser is the only one that did not trigger any problems from the platform.
 
 ## Configuration 📄
-Update the `values.json` file with your personal details:
+Copy `values.example.json` to `values.json` and update it with your personal details:
+
+```sh
+cp values.example.json values.json
+```
+
+`values.json` is ignored by git to keep your local credentials out of version control.
+
+Then fill this structure:
 ```json
 {
   "url": "https://icp.administracionelectronica.gob.es/icpplus/index.html",
