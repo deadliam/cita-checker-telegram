@@ -194,6 +194,32 @@ def get_effective_driver_version(browser_version_text):
     return CHROMEDRIVER_VERSION
 
 
+def build_chromium_args(browser_version_text):
+    is_legacy_72 = "72." in browser_version_text
+    base = [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "--disable-software-rasterizer",
+        "--disable-extensions",
+        "--disable-infobars",
+        "--remote-debugging-port=9222",
+        "--user-data-dir=/tmp/chrome-user-data",
+        "--data-path=/tmp/chrome-data",
+        "--disk-cache-dir=/tmp/chrome-cache",
+    ]
+    if is_legacy_72:
+        # Only use these aggressive flags for old Chromium/Brave 72.
+        base.extend(["--no-zygote", "--single-process"])
+    else:
+        # More stable for Chrome 89 in containers.
+        base.append("--disable-features=VizDisplayCompositor")
+    if HEADLESS:
+        base.extend(["--headless", "--window-size=1366,768"])
+    return ",".join(base)
+
+
 def check_for_appointments():
     try:
         effective_browser_binary, browser_version_text = get_effective_browser_binary()
@@ -202,24 +228,7 @@ def check_for_appointments():
         if browser_version_text:
             logging.info("Detected browser version: %s", browser_version_text)
 
-        chromium_args = (
-            "--no-sandbox,"
-            "--disable-setuid-sandbox,"
-            "--disable-dev-shm-usage,"
-            "--disable-gpu,"
-            "--disable-software-rasterizer,"
-            "--disable-extensions,"
-            "--disable-infobars,"
-            "--no-zygote,"
-            "--single-process,"
-            "--remote-debugging-port=9222,"
-            "--user-data-dir=/tmp/chrome-user-data,"
-            "--data-path=/tmp/chrome-data,"
-            "--disk-cache-dir=/tmp/chrome-cache"
-        )
-        if HEADLESS:
-            # Legacy Chromium 72 does not support --headless=new.
-            chromium_args += ",--headless,--window-size=1366,768"
+        chromium_args = build_chromium_args(browser_version_text)
         with SB(
             browser="chrome",
             binary_location=effective_browser_binary,
