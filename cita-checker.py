@@ -80,6 +80,23 @@ SB_SLOW = bool(config.get("sb_slow", False))
 SB_DEMO = bool(config.get("sb_demo", False))
 TELEGRAM_STEP_SCREENSHOTS = bool(config.get("telegram_step_screenshots", True))
 STEP_SCREENSHOTS_DIR = str(config.get("step_screenshots_dir", "/tmp/cita_steps")).strip() or "/tmp/cita_steps"
+MAX_BACKOFF_SECONDS = 3600
+DEFAULT_BACKOFF_SECONDS = [120, 300, 900, 1800, 3600]
+configured_backoff = config.get("backoff_seconds", DEFAULT_BACKOFF_SECONDS)
+if isinstance(configured_backoff, list) and configured_backoff:
+    BACKOFF_SECONDS = []
+    for value in configured_backoff:
+        try:
+            seconds = int(value)
+            if seconds > 0:
+                BACKOFF_SECONDS.append(min(seconds, MAX_BACKOFF_SECONDS))
+        except Exception:
+            continue
+    if not BACKOFF_SECONDS:
+        BACKOFF_SECONDS = DEFAULT_BACKOFF_SECONDS
+else:
+    BACKOFF_SECONDS = DEFAULT_BACKOFF_SECONDS
+BLOCK_COOLDOWN_SECONDS = min(max(int(config.get("block_cooldown_seconds", 900)), 60), MAX_BACKOFF_SECONDS)
 
 telegram_bot_token = config.get("telegram_bot_token", "").strip()
 telegram_default_chat_id = str(config.get("telegram_chat_id", "")).strip()
@@ -93,6 +110,8 @@ state = {
     "last_result": "never_run",
     "last_check_at": 0.0,
     "is_check_running": False,
+    "consecutive_failures": 0,
+    "blocked_until": 0.0,
 }
 state_lock = threading.Lock()
 check_now_event = threading.Event()
@@ -227,7 +246,28 @@ def get_effective_driver_version(browser_version_text):
     return CHROMEDRIVER_VERSION
 
 
-def build_chromium_args(browser_version_text):
+def get_rotating_proxy():
+    """Get a rotating proxy URL for IP rotation."""
+    proxy_config = config.get("proxy_config", {})
+
+    if not proxy_config:
+        return None
+
+    # Support single proxy URL
+    proxy_url = proxy_config.get("proxy_url", "").strip()
+    if proxy_url:
+        return proxy_url
+
+    # Support list of proxies to rotate through
+    proxy_list = proxy_config.get("proxy_list", [])
+    if proxy_list:
+        selected_proxy = random.choice(proxy_list)
+        return selected_proxy.strip()
+
+    return None
+
+
+def build_chromium_args(browser_version_text, proxy_url=None):
     is_legacy_72 = "72." in browser_version_text
     base = [
         "--no-sandbox",
@@ -242,6 +282,11 @@ def build_chromium_args(browser_version_text):
         "--data-path=/tmp/chrome-data",
         "--disk-cache-dir=/tmp/chrome-cache",
     ]
+
+    # Add proxy if configured
+    if proxy_url:
+        base.append(f"--proxy-server={proxy_url}")
+
     if is_legacy_72:
         # Only use these aggressive flags for old Chromium/Brave 72.
         base.extend(["--no-zygote", "--single-process"])
@@ -387,28 +432,82 @@ def select_document_type(sb):
     )
 
 
+class BlockedPageException(Exception):
+    def __init__(self, support_id="", stage=""):
+        self.support_id = support_id
+        self.stage = stage
+        support_fragment = f", support_id={support_id}" if support_id else ""
+        super().__init__(f"Blocked page detected at stage='{stage}'{support_fragment}")
+
+
+def parse_support_id(page_text):
+    match = re.search(r"support ID is:\s*<?([0-9]+)>?", page_text, flags=re.IGNORECASE)
+    if match:
+        return match.group(1)
+    return ""
+
+
+def detect_block_page(sb):
+    try:
+        page_text = sb.driver.page_source
+    except Exception:
+        return ""
+    normalized = normalize_text(page_text)
+    if "THE REQUESTED URL WAS REJECTED" in normalized or "YOUR SUPPORT ID IS" in normalized:
+        return parse_support_id(page_text)
+    return ""
+
+
+def ensure_not_blocked(sb, stage):
+    support_id = detect_block_page(sb)
+    if not support_id and not sb.is_text_visible("The requested URL was rejected"):
+        return
+
+    blocked_path = "/tmp/cita_blocked.png"
+    try:
+        sb.save_screenshot(blocked_path)
+    except Exception:
+        pass
+
+    text = (
+        f"Block page detected during '{stage}'. "
+        f"Cooldown for {BLOCK_COOLDOWN_SECONDS} seconds."
+    )
+    if support_id:
+        text += f" Support ID: {support_id}"
+    send_telegram_message(text)
+    send_telegram_photo("Block page detected", blocked_path)
+    raise BlockedPageException(support_id=support_id, stage=stage)
+
+
 def run_check_steps(sb):
     set_random_window_size(sb)
     sleep(2)
     capture_step_screenshot(sb, "browser_started")
     sb.open(config["url"])
+    ensure_not_blocked(sb, "open_url")
     sleep(2)
     capture_step_screenshot(sb, "page_opened")
     sb.click("#form")
+    ensure_not_blocked(sb, "open_region_dropdown")
     sleep(2)
     capture_step_screenshot(sb, "province_dropdown_opened")
     sb.select_option_by_text("#form", config["region"])
+    ensure_not_blocked(sb, "region_selected")
     sleep(2)
     capture_step_screenshot(sb, "province_selected")
     sb.click("#btnAceptar")
+    ensure_not_blocked(sb, "after_region_accept")
     capture_step_screenshot(sb, "province_confirmed")
     matched_selector, matched_option = select_tramite_option(sb, config["tramiteOptionText"])
     logging.info("Selected tramite option from %s: %s", matched_selector, matched_option)
     capture_step_screenshot(sb, "tramite_selected")
     sb.click("#btnAceptar")
+    ensure_not_blocked(sb, "after_tramite_accept")
     sleep(2)
     capture_step_screenshot(sb, "tramite_confirmed")
     sb.click("#btnEntrar")
+    ensure_not_blocked(sb, "enter_form")
     capture_step_screenshot(sb, "entered_form")
     selected_doc_selector = select_document_type(sb)
     logging.info("Selected document type using selector: %s", selected_doc_selector)
@@ -447,27 +546,41 @@ def check_for_appointments():
     if browser_version_text:
         logging.info("Detected browser version: %s", browser_version_text)
 
+    # Get rotating proxy for this run (returns None if not configured)
+    proxy_url = get_rotating_proxy()
+    if proxy_url:
+        logging.info("Using rotating proxy: %s", proxy_url)
+    else:
+        logging.info("No proxy configured. Running in regular mode.")
+
+    # Helper function to build fallback args with proxy
+    def build_fallback_args(proxy=None):
+        args = "--no-sandbox,--disable-dev-shm-usage,--disable-gpu,--headless,--window-size=1366,768"
+        if proxy:
+            args += f",--proxy-server={proxy}"
+        return args
+
     launch_profiles = [
         {
             "name": "primary",
             "headed": not HEADLESS,
             "headless": HEADLESS,
             "xvfb": False,
-            "chromium_arg": build_chromium_args(browser_version_text),
+            "chromium_arg": build_chromium_args(browser_version_text, proxy_url),
         },
         {
             "name": "minimal_headless",
             "headed": False,
             "headless": True,
             "xvfb": False,
-            "chromium_arg": "--no-sandbox,--disable-dev-shm-usage,--disable-gpu,--headless,--window-size=1366,768",
+            "chromium_arg": build_fallback_args(proxy_url),
         },
         {
             "name": "xvfb_headed",
             "headed": True,
             "headless": False,
             "xvfb": True,
-            "chromium_arg": "--no-sandbox,--disable-dev-shm-usage,--disable-gpu,--window-size=1366,768",
+            "chromium_arg": "--no-sandbox,--disable-dev-shm-usage,--disable-gpu,--window-size=1366,768" + (f",--proxy-server={proxy_url}" if proxy_url else ""),
         },
     ]
 
@@ -489,6 +602,10 @@ def check_for_appointments():
                 chromium_arg=profile["chromium_arg"],
             ) as sb:
                 return run_check_steps(sb)
+        except BlockedPageException as blocked_error:
+            logging.warning("Launch profile '%s' blocked: %s", profile["name"], blocked_error)
+            find_and_kill()
+            return "blocked"
         except Exception as error:
             last_error = error
             logging.warning("Launch profile '%s' failed: %s", profile["name"], error)
@@ -682,6 +799,8 @@ def format_status():
         last_result = state["last_result"]
         last_check_at = state["last_check_at"]
         is_running = state["is_check_running"]
+        consecutive_failures = state.get("consecutive_failures", 0)
+        blocked_until = state.get("blocked_until", 0.0)
 
     now = time.time()
     if next_check_at and next_check_at > now:
@@ -692,14 +811,26 @@ def format_status():
     last_check_text = "never"
     if last_check_at:
         last_check_text = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(last_check_at))
+    blocked_until_text = "no"
+    if blocked_until and blocked_until > now:
+        blocked_until_text = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(blocked_until))
 
     return (
         f"checker_enabled={enabled}\n"
         f"is_check_running={is_running}\n"
         f"last_result={last_result}\n"
         f"last_check_at={last_check_text}\n"
+        f"consecutive_failures={consecutive_failures}\n"
+        f"blocked_until={blocked_until_text}\n"
         f"next_check_in_seconds={seconds_until_next}"
     )
+
+
+def get_backoff_delay(failure_count):
+    if failure_count <= 0:
+        return CHECK_INTERVAL_SECONDS
+    index = min(failure_count - 1, len(BACKOFF_SECONDS) - 1)
+    return min(BACKOFF_SECONDS[index], MAX_BACKOFF_SECONDS)
 
 
 def read_last_log_lines(max_lines=20):
@@ -854,8 +985,28 @@ def run_checker_loop():
         with state_lock:
             state["last_result"] = result
             state["last_check_at"] = finished_at
-            state["next_check_at"] = finished_at + CHECK_INTERVAL_SECONDS
+            if result in ("retry", "manual_check_needed"):
+                state["consecutive_failures"] = 0
+                state["blocked_until"] = 0.0
+                next_delay = CHECK_INTERVAL_SECONDS
+            elif result == "blocked":
+                state["consecutive_failures"] += 1
+                next_delay = BLOCK_COOLDOWN_SECONDS
+                state["blocked_until"] = finished_at + next_delay
+            else:
+                state["consecutive_failures"] += 1
+                state["blocked_until"] = 0.0
+                next_delay = get_backoff_delay(state["consecutive_failures"])
+
+            state["next_check_at"] = finished_at + next_delay
             state["is_check_running"] = False
+
+        logging.info(
+            "Check finished with result=%s. Next run in %s seconds (failures=%s).",
+            result,
+            next_delay,
+            state.get("consecutive_failures", 0),
+        )
 
 
 def main():

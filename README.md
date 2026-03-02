@@ -70,6 +70,8 @@ Then fill this structure:
   "region": "Madrid",
   "checker_enabled_on_startup": true,
   "check_interval_seconds": 600,
+  "backoff_seconds": [120, 300, 900, 1800, 3600],
+  "block_cooldown_seconds": 900,
   "appointment_hold_seconds": 600,
   "telegram_poll_timeout_seconds": 30,
   "telegram_step_screenshots": true,
