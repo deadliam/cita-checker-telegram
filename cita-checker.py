@@ -311,7 +311,11 @@ def select_tramite_option(sb, desired_text):
     selectors = []
     try:
         elements = sb.find_elements(By.CSS_SELECTOR, "select[id^='tramiteGrupo']")
-        selectors = [f"#{element.get_attribute('id').replace('[', '\\\\[').replace(']', '\\\\]')}" for element in elements]
+        selectors = []
+        for element in elements:
+            element_id = element.get_attribute("id")
+            escaped_id = element_id.replace("[", "\\[").replace("]", "\\]")
+            selectors.append("#" + escaped_id)
     except Exception:
         selectors = []
 
