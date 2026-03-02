@@ -248,65 +248,100 @@ def build_chromium_args(browser_version_text):
     return ",".join(base)
 
 
-def check_for_appointments():
-    try:
-        effective_browser_binary, browser_version_text = get_effective_browser_binary()
-        effective_driver_version = get_effective_driver_version(browser_version_text)
-        logging.info("Using browser binary: %s", effective_browser_binary)
-        if browser_version_text:
-            logging.info("Detected browser version: %s", browser_version_text)
+def run_check_steps(sb):
+    set_random_window_size(sb)
+    sleep(2)
+    sb.open(config["url"])
+    sleep(2)
+    sb.click("#form")
+    sleep(2)
+    sb.select_option_by_text("#form", config["region"])
+    sleep(2)
+    sb.click("#btnAceptar")
+    sb.select_option_by_text("#tramiteGrupo\\[0\\]", config["tramiteOptionText"])
+    sb.click("#btnAceptar")
+    sleep(2)
+    sb.click("#btnEntrar")
+    sb.find_element(By.ID, "rdbTipoDocPas").click()
+    sb.type("#txtIdCitado", config["idCitadoValue"])
+    sleep(2)
+    sb.type("#txtDesCitado", config["desCitadoValue"])
+    sleep(2)
+    sb.click("#btnEnviar")
+    sleep(2)
+    sb.click("#btnEnviar")
+    sleep(2)
 
-        chromium_args = build_chromium_args(browser_version_text)
-        with SB(
-            browser="chrome",
-            binary_location=effective_browser_binary,
-            headed=not HEADLESS,
-            headless=HEADLESS,
-            use_auto_ext=SB_USE_AUTO_EXT,
-            slow=SB_SLOW,
-            demo=SB_DEMO,
-            incognito=True,
-            driver_version=effective_driver_version,
-            chromium_arg=chromium_args,
-        ) as sb:
-            set_random_window_size(sb)
-            sleep(2)
-            sb.open(config["url"])
-            sleep(2)
-            sb.click("#form")
-            sleep(2)
-            sb.select_option_by_text("#form", config["region"])
-            sleep(2)
-            sb.click("#btnAceptar")
-            sb.select_option_by_text("#tramiteGrupo\\[0\\]", config["tramiteOptionText"])
-            sb.click("#btnAceptar")
-            sleep(2)
-            sb.click("#btnEntrar")
-            sb.find_element(By.ID, "rdbTipoDocPas").click()
-            sb.type("#txtIdCitado", config["idCitadoValue"])
-            sleep(2)
-            sb.type("#txtDesCitado", config["desCitadoValue"])
-            sleep(2)
-            sb.click("#btnEnviar")
-            sleep(2)
-            sb.click("#btnEnviar")
-            sleep(2)
-
-            if sb.is_text_visible("En este momento no hay citas disponibles"):
-                logging.info("No available appointments. Next check in %s seconds.", CHECK_INTERVAL_SECONDS)
-                find_and_kill()
-                return "retry"
-
-            sb.set_window_size(1280, 1024)
-            sb.save_screenshot(SCREENSHOT_PATH)
-            notify_appointment_found()
-            logging.info("Appointments might be available. Holding browser for %s seconds.", APPOINTMENT_HOLD_SECONDS)
-            time.sleep(APPOINTMENT_HOLD_SECONDS)
-            return "manual_check_needed"
-    except Exception as error:
-        logging.error("Encountered an error during the check: %s. Retrying later.", error)
+    if sb.is_text_visible("En este momento no hay citas disponibles"):
+        logging.info("No available appointments. Next check in %s seconds.", CHECK_INTERVAL_SECONDS)
         find_and_kill()
-        return "error"
+        return "retry"
+
+    sb.set_window_size(1280, 1024)
+    sb.save_screenshot(SCREENSHOT_PATH)
+    notify_appointment_found()
+    logging.info("Appointments might be available. Holding browser for %s seconds.", APPOINTMENT_HOLD_SECONDS)
+    time.sleep(APPOINTMENT_HOLD_SECONDS)
+    return "manual_check_needed"
+
+
+def check_for_appointments():
+    effective_browser_binary, browser_version_text = get_effective_browser_binary()
+    effective_driver_version = get_effective_driver_version(browser_version_text)
+    logging.info("Using browser binary: %s", effective_browser_binary)
+    if browser_version_text:
+        logging.info("Detected browser version: %s", browser_version_text)
+
+    launch_profiles = [
+        {
+            "name": "primary",
+            "headed": not HEADLESS,
+            "headless": HEADLESS,
+            "xvfb": False,
+            "chromium_arg": build_chromium_args(browser_version_text),
+        },
+        {
+            "name": "minimal_headless",
+            "headed": False,
+            "headless": True,
+            "xvfb": False,
+            "chromium_arg": "--no-sandbox,--disable-dev-shm-usage,--disable-gpu,--headless,--window-size=1366,768",
+        },
+        {
+            "name": "xvfb_headed",
+            "headed": True,
+            "headless": False,
+            "xvfb": True,
+            "chromium_arg": "--no-sandbox,--disable-dev-shm-usage,--disable-gpu,--window-size=1366,768",
+        },
+    ]
+
+    last_error = None
+    for profile in launch_profiles:
+        try:
+            logging.info("Trying browser launch profile: %s", profile["name"])
+            with SB(
+                browser="chrome",
+                binary_location=effective_browser_binary,
+                headed=profile["headed"],
+                headless=profile["headless"],
+                xvfb=profile["xvfb"],
+                use_auto_ext=SB_USE_AUTO_EXT,
+                slow=SB_SLOW,
+                demo=SB_DEMO,
+                incognito=True,
+                driver_version=effective_driver_version,
+                chromium_arg=profile["chromium_arg"],
+            ) as sb:
+                return run_check_steps(sb)
+        except Exception as error:
+            last_error = error
+            logging.warning("Launch profile '%s' failed: %s", profile["name"], error)
+            find_and_kill()
+            time.sleep(1)
+
+    logging.error("Encountered an error during the check: %s. Retrying later.", last_error)
+    return "error"
 
 
 def setup_logging():
