@@ -11,11 +11,14 @@ import urllib.parse
 import urllib.request
 import uuid
 import pwd
+import re
+import unicodedata
 from email.message import EmailMessage
 from time import sleep
 
 from seleniumbase import SB
 from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import Select
 
 
 CONFIG_PATH = "values.json"
@@ -248,6 +251,62 @@ def build_chromium_args(browser_version_text):
     return ",".join(base)
 
 
+def normalize_text(value):
+    text = (value or "").strip()
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(char for char in text if not unicodedata.combining(char))
+    text = text.upper()
+    text = re.sub(r"\s+", " ", text)
+    return text
+
+
+def select_option_by_text_resilient(sb, selector, desired_text):
+    desired_normalized = normalize_text(desired_text)
+    element = sb.find_element(selector)
+    select = Select(element)
+    options = [opt.text.strip() for opt in select.options if opt.text.strip()]
+
+    if not options:
+        raise Exception(f"No options found for selector {selector}")
+
+    # 1) Exact match first.
+    for option in options:
+        if option == desired_text:
+            sb.select_option_by_text(selector, option)
+            return option
+
+    # 2) Normalized full-text match (accent/case/spacing tolerant).
+    for option in options:
+        if normalize_text(option) == desired_normalized:
+            sb.select_option_by_text(selector, option)
+            return option
+
+    # 3) Handle values that include extra description after ":".
+    desired_head = desired_text.split(":")[0].strip()
+    desired_head_normalized = normalize_text(desired_head)
+    if desired_head_normalized:
+        for option in options:
+            if normalize_text(option) == desired_head_normalized:
+                sb.select_option_by_text(selector, option)
+                return option
+        for option in options:
+            if normalize_text(option).startswith(desired_head_normalized):
+                sb.select_option_by_text(selector, option)
+                return option
+
+    # 4) Contains/startswith fallback.
+    for option in options:
+        norm_option = normalize_text(option)
+        if desired_normalized in norm_option or norm_option in desired_normalized:
+            sb.select_option_by_text(selector, option)
+            return option
+
+    raise Exception(
+        f"Could not match option '{desired_text}' for selector {selector}. "
+        f"Available options: {options}"
+    )
+
+
 def run_check_steps(sb):
     set_random_window_size(sb)
     sleep(2)
@@ -258,7 +317,8 @@ def run_check_steps(sb):
     sb.select_option_by_text("#form", config["region"])
     sleep(2)
     sb.click("#btnAceptar")
-    sb.select_option_by_text("#tramiteGrupo\\[0\\]", config["tramiteOptionText"])
+    matched_option = select_option_by_text_resilient(sb, "#tramiteGrupo\\[0\\]", config["tramiteOptionText"])
+    logging.info("Selected tramite option: %s", matched_option)
     sb.click("#btnAceptar")
     sleep(2)
     sb.click("#btnEntrar")
