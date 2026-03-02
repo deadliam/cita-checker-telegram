@@ -73,6 +73,7 @@ Then fill this structure:
   "schedule_days": [0, 1, 2, 3, 4],
   "schedule_mode": "times",
   "schedule_times": ["09:00", "10:00", "12:30"],
+  "schedule_interval_start": "08:00",
   "schedule_interval_minutes": 60,
   "schedule_start": "09:00",
   "schedule_end": "18:00",
@@ -117,6 +118,7 @@ On startup, the script logs a configuration sanity check and warns about missing
   - `window` mode: reply `HH:MM-HH:MM`
   - `times` mode: reply `09:00,10:00,12:30`
   - `interval` mode: reply `every:60` (minutes)
+- `/schedule_interval_start`: set interval anchor time (example `08:00`).
 - `/last_log`: return latest lines from `/tmp/events.log`.
 - `/screenshot`: send the latest screenshot (`/tmp/cita_disponible.png`) if present.
 - `/help`: show command list.

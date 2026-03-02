@@ -17,6 +17,7 @@
   "schedule_days": [0, 1, 2, 3, 4],
   "schedule_mode": "times",
   "schedule_times": ["09:00", "10:00", "12:30"],
+  "schedule_interval_start": "08:00",
   "schedule_interval_minutes": 60,
   "schedule_start": "09:00",
   "schedule_end": "18:00",

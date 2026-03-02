@@ -121,6 +121,7 @@ state = {
     "schedule_end": str(config.get("schedule_end", "18:00")),
     "schedule_times": config.get("schedule_times", []),
     "schedule_interval_minutes": int(config.get("schedule_interval_minutes", 60)),
+    "schedule_interval_start": str(config.get("schedule_interval_start", "08:00")),
     "last_schedule_trigger_key": "",
 }
 state_lock = threading.Lock()
@@ -147,6 +148,7 @@ def load_schedule_state():
             state["schedule_end"] = str(data.get("end", state["schedule_end"]))
             state["schedule_times"] = normalize_schedule_times(data.get("times", state["schedule_times"]))
             state["schedule_interval_minutes"] = max(1, int(data.get("interval_minutes", state["schedule_interval_minutes"])))
+            state["schedule_interval_start"] = str(data.get("interval_start", state["schedule_interval_start"]))
     except Exception as error:
         logging.warning("Could not load schedule state: %s", error)
 
@@ -162,6 +164,7 @@ def save_schedule_state():
                 "end": state["schedule_end"],
                 "times": state["schedule_times"],
                 "interval_minutes": state["schedule_interval_minutes"],
+                "interval_start": state["schedule_interval_start"],
             }
         with open(SCHEDULE_FILE, "w", encoding="utf-8") as file_handle:
             json.dump(payload, file_handle)
@@ -267,6 +270,7 @@ def is_now_in_schedule(now_ts):
         end = state["schedule_end"]
         times = list(state.get("schedule_times", []))
         interval_minutes = int(state.get("schedule_interval_minutes", 60))
+        interval_start = str(state.get("schedule_interval_start", "08:00"))
     if not enabled:
         return True
     if not days:
@@ -280,7 +284,10 @@ def is_now_in_schedule(now_ts):
         return hhmm in times
     if mode == "interval":
         interval = max(1, interval_minutes)
-        return (now_min % interval) == 0
+        anchor = parse_time_to_minutes(interval_start)
+        if now_min < anchor:
+            return False
+        return ((now_min - anchor) % interval) == 0
     start_min = parse_time_to_minutes(start)
     end_min = parse_time_to_minutes(end)
     if start_min <= end_min:
@@ -297,10 +304,11 @@ def schedule_summary():
         end = state["schedule_end"]
         times = list(state.get("schedule_times", []))
         interval_minutes = int(state.get("schedule_interval_minutes", 60))
+        interval_start = str(state.get("schedule_interval_start", "08:00"))
     if mode == "times":
         details = f"times={times}"
     elif mode == "interval":
-        details = f"interval_minutes={interval_minutes}"
+        details = f"interval_start={interval_start}, interval_minutes={interval_minutes}"
     else:
         details = f"time={start}-{end}"
     return f"enabled={enabled}, mode={mode}, days={format_days(days)}, {details}"
@@ -997,6 +1005,7 @@ def format_status():
         schedule_end = state.get("schedule_end", "18:00")
         schedule_times = list(state.get("schedule_times", []))
         schedule_interval_minutes = int(state.get("schedule_interval_minutes", 60))
+        schedule_interval_start = str(state.get("schedule_interval_start", "08:00"))
 
     now = time.time()
     if next_check_at and next_check_at > now:
@@ -1023,6 +1032,7 @@ def format_status():
         f"schedule_days={format_days(schedule_days)}\n"
         f"schedule_time={schedule_start}-{schedule_end}\n"
         f"schedule_times={schedule_times}\n"
+        f"schedule_interval_start={schedule_interval_start}\n"
         f"schedule_interval_minutes={schedule_interval_minutes}\n"
         f"next_check_in_seconds={seconds_until_next}"
     )
@@ -1079,6 +1089,14 @@ def handle_telegram_command(text, chat_id):
                 schedule_edit_sessions.pop(chat_id, None)
                 send_telegram_message(f"Schedule updated: {schedule_summary()}", chat_id=chat_id)
                 return
+            if session["stage"] == "await_interval_start":
+                parse_time_to_minutes(stripped)
+                with state_lock:
+                    state["schedule_interval_start"] = stripped
+                save_schedule_state()
+                schedule_edit_sessions.pop(chat_id, None)
+                send_telegram_message(f"Interval start updated: {schedule_summary()}", chat_id=chat_id)
+                return
         except Exception as error:
             send_telegram_message(f"Invalid input: {error}", chat_id=chat_id)
             return
@@ -1108,6 +1126,7 @@ def handle_telegram_command(text, chat_id):
             "/schedule_days - set weekdays (reply: Mon,Tue or 1,2,...7)\n"
             "/schedule_mode window|times|interval - set schedule mode\n"
             "/schedule_time - set schedule data by mode\n"
+            "/schedule_interval_start - set interval anchor HH:MM\n"
             "  window: HH:MM-HH:MM\n"
             "  times: HH:MM,HH:MM,HH:MM\n"
             "  interval: every:60\n"
@@ -1165,10 +1184,15 @@ def handle_telegram_command(text, chat_id):
         if mode == "times":
             prompt = "Send times list as HH:MM,HH:MM,HH:MM (example: 09:00,10:00,12:30)."
         elif mode == "interval":
-            prompt = "Send interval minutes (example: every:60 or 60)."
+            prompt = "Send interval minutes (example: every:60 or 60). Then set /schedule_interval_start."
         else:
             prompt = "Send time range as HH:MM-HH:MM (example: 08:30-18:00)."
         send_telegram_message(prompt, chat_id=chat_id)
+        return
+
+    if command == "/schedule_interval_start":
+        schedule_edit_sessions[chat_id] = {"stage": "await_interval_start"}
+        send_telegram_message("Send interval start time as HH:MM (example: 08:00).", chat_id=chat_id)
         return
 
     if command == "/stop":
@@ -1217,6 +1241,7 @@ def handle_telegram_command(text, chat_id):
             "/schedule_mode - set schedule mode\n"
             "/schedule_days - set weekdays\n"
             "/schedule_time - set time range\n"
+            "/schedule_interval_start - set interval anchor time\n"
             "/last_log - show last log lines\n"
             "/screenshot - send latest screenshot",
             chat_id=chat_id,
