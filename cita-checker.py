@@ -339,6 +339,54 @@ def select_tramite_option(sb, desired_text):
     )
 
 
+def select_document_type(sb):
+    requested_type = str(config.get("TypeID", "")).strip().upper()
+    mapping = {
+        "NIE": ["#rdbTipoDocNie", "#rdbTipoDocNIE"],
+        "PASAPORTE": ["#rdbTipoDocPas"],
+        "PASSPORT": ["#rdbTipoDocPas"],
+        "DNI": ["#rdbTipoDocDni", "#rdbTipoDocDNI"],
+    }
+
+    # Build candidate selectors in priority order.
+    candidates = []
+    if requested_type in mapping:
+        candidates.extend(mapping[requested_type])
+    # Generic fallbacks.
+    candidates.extend(["#rdbTipoDocNie", "#rdbTipoDocNIE", "#rdbTipoDocPas", "#rdbTipoDocDni", "#rdbTipoDocDNI"])
+
+    # Try known IDs first.
+    for selector in candidates:
+        try:
+            if sb.is_element_visible(selector):
+                sb.click(selector)
+                return selector
+        except Exception:
+            pass
+
+    # Fallback: click first visible radio button in document type section.
+    radio_selectors = [
+        "input[type='radio'][id*='TipoDoc']",
+        "input[type='radio'][name*='TipoDoc']",
+        "input[type='radio']",
+    ]
+    for css in radio_selectors:
+        try:
+            radios = sb.find_elements(By.CSS_SELECTOR, css)
+            for radio in radios:
+                if radio.is_displayed() and radio.is_enabled():
+                    radio.click()
+                    rid = radio.get_attribute("id") or css
+                    return f"css:{rid}"
+        except Exception:
+            pass
+
+    raise Exception(
+        f"Could not select document type. Requested TypeID='{requested_type}'. "
+        "No known document type radio buttons were found."
+    )
+
+
 def run_check_steps(sb):
     set_random_window_size(sb)
     sleep(2)
@@ -362,7 +410,8 @@ def run_check_steps(sb):
     capture_step_screenshot(sb, "tramite_confirmed")
     sb.click("#btnEntrar")
     capture_step_screenshot(sb, "entered_form")
-    sb.find_element(By.ID, "rdbTipoDocPas").click()
+    selected_doc_selector = select_document_type(sb)
+    logging.info("Selected document type using selector: %s", selected_doc_selector)
     capture_step_screenshot(sb, "document_type_selected")
     sb.type("#txtIdCitado", config["idCitadoValue"])
     sleep(2)
