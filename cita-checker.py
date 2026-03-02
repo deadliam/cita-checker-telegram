@@ -307,6 +307,32 @@ def select_option_by_text_resilient(sb, selector, desired_text):
     )
 
 
+def select_tramite_option(sb, desired_text):
+    selectors = []
+    try:
+        elements = sb.find_elements(By.CSS_SELECTOR, "select[id^='tramiteGrupo']")
+        selectors = [f"#{element.get_attribute('id').replace('[', '\\\\[').replace(']', '\\\\]')}" for element in elements]
+    except Exception:
+        selectors = []
+
+    # Fallback to known default if dynamic discovery fails.
+    if not selectors:
+        selectors = ["#tramiteGrupo\\[0\\]"]
+
+    errors = []
+    for selector in selectors:
+        try:
+            selected = select_option_by_text_resilient(sb, selector, desired_text)
+            return selector, selected
+        except Exception as error:
+            errors.append(f"{selector}: {error}")
+
+    raise Exception(
+        f"Could not match option '{desired_text}' in any tramite dropdown. "
+        f"Tried selectors: {selectors}. Errors: {errors}"
+    )
+
+
 def run_check_steps(sb):
     set_random_window_size(sb)
     sleep(2)
@@ -317,8 +343,8 @@ def run_check_steps(sb):
     sb.select_option_by_text("#form", config["region"])
     sleep(2)
     sb.click("#btnAceptar")
-    matched_option = select_option_by_text_resilient(sb, "#tramiteGrupo\\[0\\]", config["tramiteOptionText"])
-    logging.info("Selected tramite option: %s", matched_option)
+    matched_selector, matched_option = select_tramite_option(sb, config["tramiteOptionText"])
+    logging.info("Selected tramite option from %s: %s", matched_selector, matched_option)
     sb.click("#btnAceptar")
     sleep(2)
     sb.click("#btnEntrar")
