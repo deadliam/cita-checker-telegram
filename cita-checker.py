@@ -78,6 +78,8 @@ BRAVE_BINARY_LOCATION = str(config.get("brave_binary_location", "/usr/bin/brave-
 SB_USE_AUTO_EXT = bool(config.get("sb_use_auto_ext", False))
 SB_SLOW = bool(config.get("sb_slow", False))
 SB_DEMO = bool(config.get("sb_demo", False))
+TELEGRAM_STEP_SCREENSHOTS = bool(config.get("telegram_step_screenshots", True))
+STEP_SCREENSHOTS_DIR = str(config.get("step_screenshots_dir", "/tmp/cita_steps")).strip() or "/tmp/cita_steps"
 
 telegram_bot_token = config.get("telegram_bot_token", "").strip()
 telegram_default_chat_id = str(config.get("telegram_chat_id", "")).strip()
@@ -340,29 +342,43 @@ def select_tramite_option(sb, desired_text):
 def run_check_steps(sb):
     set_random_window_size(sb)
     sleep(2)
+    capture_step_screenshot(sb, "browser_started")
     sb.open(config["url"])
     sleep(2)
+    capture_step_screenshot(sb, "page_opened")
     sb.click("#form")
     sleep(2)
+    capture_step_screenshot(sb, "province_dropdown_opened")
     sb.select_option_by_text("#form", config["region"])
     sleep(2)
+    capture_step_screenshot(sb, "province_selected")
     sb.click("#btnAceptar")
+    capture_step_screenshot(sb, "province_confirmed")
     matched_selector, matched_option = select_tramite_option(sb, config["tramiteOptionText"])
     logging.info("Selected tramite option from %s: %s", matched_selector, matched_option)
+    capture_step_screenshot(sb, "tramite_selected")
     sb.click("#btnAceptar")
     sleep(2)
+    capture_step_screenshot(sb, "tramite_confirmed")
     sb.click("#btnEntrar")
+    capture_step_screenshot(sb, "entered_form")
     sb.find_element(By.ID, "rdbTipoDocPas").click()
+    capture_step_screenshot(sb, "document_type_selected")
     sb.type("#txtIdCitado", config["idCitadoValue"])
     sleep(2)
+    capture_step_screenshot(sb, "id_entered")
     sb.type("#txtDesCitado", config["desCitadoValue"])
     sleep(2)
+    capture_step_screenshot(sb, "name_entered")
     sb.click("#btnEnviar")
     sleep(2)
+    capture_step_screenshot(sb, "first_submit")
     sb.click("#btnEnviar")
     sleep(2)
+    capture_step_screenshot(sb, "second_submit")
 
     if sb.is_text_visible("En este momento no hay citas disponibles"):
+        capture_step_screenshot(sb, "no_appointments_message")
         logging.info("No available appointments. Next check in %s seconds.", CHECK_INTERVAL_SECONDS)
         find_and_kill()
         return "retry"
@@ -554,6 +570,21 @@ def send_telegram_photo(caption, file_path, chat_id=None):
     )
     if response and not response.get("ok", False):
         logging.error("Telegram sendPhoto failed: %s", response)
+
+
+def capture_step_screenshot(sb, step_name):
+    if not TELEGRAM_STEP_SCREENSHOTS:
+        return
+    try:
+        os.makedirs(STEP_SCREENSHOTS_DIR, exist_ok=True)
+        safe_step = re.sub(r"[^a-zA-Z0-9._-]+", "_", step_name).strip("_") or "step"
+        timestamp = time.strftime("%Y%m%d_%H%M%S", time.localtime())
+        screenshot_path = os.path.join(STEP_SCREENSHOTS_DIR, f"{timestamp}_{safe_step}.png")
+        sb.save_screenshot(screenshot_path)
+        logging.info("Saved step screenshot: %s", screenshot_path)
+        send_telegram_photo(f"Step: {step_name}", screenshot_path)
+    except Exception as error:
+        logging.warning("Could not capture/send step screenshot for '%s': %s", step_name, error)
 
 
 def initialize_telegram():

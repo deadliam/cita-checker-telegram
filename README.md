@@ -72,6 +72,8 @@ Then fill this structure:
   "check_interval_seconds": 600,
   "appointment_hold_seconds": 600,
   "telegram_poll_timeout_seconds": 30,
+  "telegram_step_screenshots": true,
+  "step_screenshots_dir": "/tmp/cita_steps",
   "telegram_bot_token": "123456789:YOUR_TELEGRAM_BOT_TOKEN",
   "telegram_chat_id": "123456789",
   "telegram_allowed_chat_ids": ["123456789"]
