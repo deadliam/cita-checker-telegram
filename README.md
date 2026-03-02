@@ -69,6 +69,13 @@ Then fill this structure:
   "keyboard_layout": "us",
   "region": "Madrid",
   "checker_enabled_on_startup": true,
+  "schedule_enabled": false,
+  "schedule_days": [0, 1, 2, 3, 4],
+  "schedule_mode": "times",
+  "schedule_times": ["09:00", "10:00", "12:30"],
+  "schedule_interval_minutes": 60,
+  "schedule_start": "09:00",
+  "schedule_end": "18:00",
   "check_interval_seconds": 600,
   "backoff_seconds": [120, 300, 900, 1800, 3600],
   "block_cooldown_seconds": 900,
@@ -100,6 +107,16 @@ On startup, the script logs a configuration sanity check and warns about missing
 - `/stop`: pause automatic checks.
 - `/check_now`: trigger one immediate check.
 - `/status`: show checker state and timing.
+- `/menu`: show checker/schedule menu.
+- `/schedule_show`: show current weekly schedule.
+- `/schedule_on`: enable schedule window enforcement.
+- `/schedule_off`: disable schedule window enforcement.
+- `/schedule_mode window|times|interval`: set schedule mode.
+- `/schedule_days`: update days (reply with `Mon,Tue` or `1,2` ... `7`).
+- `/schedule_time`:
+  - `window` mode: reply `HH:MM-HH:MM`
+  - `times` mode: reply `09:00,10:00,12:30`
+  - `interval` mode: reply `every:60` (minutes)
 - `/last_log`: return latest lines from `/tmp/events.log`.
 - `/screenshot`: send the latest screenshot (`/tmp/cita_disponible.png`) if present.
 - `/help`: show command list.

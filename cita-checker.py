@@ -13,6 +13,7 @@ import uuid
 import pwd
 import re
 import unicodedata
+from datetime import datetime
 from email.message import EmailMessage
 from time import sleep
 
@@ -97,6 +98,7 @@ if isinstance(configured_backoff, list) and configured_backoff:
 else:
     BACKOFF_SECONDS = DEFAULT_BACKOFF_SECONDS
 BLOCK_COOLDOWN_SECONDS = min(max(int(config.get("block_cooldown_seconds", 900)), 60), MAX_BACKOFF_SECONDS)
+SCHEDULE_FILE = "/tmp/cita_schedule.json"
 
 telegram_bot_token = config.get("telegram_bot_token", "").strip()
 telegram_default_chat_id = str(config.get("telegram_chat_id", "")).strip()
@@ -112,9 +114,196 @@ state = {
     "is_check_running": False,
     "consecutive_failures": 0,
     "blocked_until": 0.0,
+    "schedule_enabled": bool(config.get("schedule_enabled", False)),
+    "schedule_days": config.get("schedule_days", [0, 1, 2, 3, 4]),  # 0=Mon..6=Sun
+    "schedule_mode": str(config.get("schedule_mode", "window")),
+    "schedule_start": str(config.get("schedule_start", "09:00")),
+    "schedule_end": str(config.get("schedule_end", "18:00")),
+    "schedule_times": config.get("schedule_times", []),
+    "schedule_interval_minutes": int(config.get("schedule_interval_minutes", 60)),
+    "last_schedule_trigger_key": "",
 }
 state_lock = threading.Lock()
 check_now_event = threading.Event()
+schedule_edit_sessions = {}
+
+
+def normalize_schedule_days(days):
+    valid = sorted(set(int(day) for day in days if isinstance(day, int) and 0 <= int(day) <= 6))
+    return valid
+
+
+def load_schedule_state():
+    if not os.path.exists(SCHEDULE_FILE):
+        return
+    try:
+        with open(SCHEDULE_FILE, "r", encoding="utf-8") as file_handle:
+            data = json.load(file_handle)
+        with state_lock:
+            state["schedule_enabled"] = bool(data.get("enabled", state["schedule_enabled"]))
+            state["schedule_days"] = normalize_schedule_days(data.get("days", state["schedule_days"]))
+            state["schedule_mode"] = str(data.get("mode", state["schedule_mode"]))
+            state["schedule_start"] = str(data.get("start", state["schedule_start"]))
+            state["schedule_end"] = str(data.get("end", state["schedule_end"]))
+            state["schedule_times"] = normalize_schedule_times(data.get("times", state["schedule_times"]))
+            state["schedule_interval_minutes"] = max(1, int(data.get("interval_minutes", state["schedule_interval_minutes"])))
+    except Exception as error:
+        logging.warning("Could not load schedule state: %s", error)
+
+
+def save_schedule_state():
+    try:
+        with state_lock:
+            payload = {
+                "enabled": state["schedule_enabled"],
+                "days": state["schedule_days"],
+                "mode": state["schedule_mode"],
+                "start": state["schedule_start"],
+                "end": state["schedule_end"],
+                "times": state["schedule_times"],
+                "interval_minutes": state["schedule_interval_minutes"],
+            }
+        with open(SCHEDULE_FILE, "w", encoding="utf-8") as file_handle:
+            json.dump(payload, file_handle)
+    except Exception as error:
+        logging.warning("Could not save schedule state: %s", error)
+
+
+def parse_time_to_minutes(value):
+    parts = value.split(":")
+    if len(parts) != 2:
+        raise ValueError("Time must be HH:MM")
+    hour = int(parts[0])
+    minute = int(parts[1])
+    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+        raise ValueError("Invalid HH:MM")
+    return hour * 60 + minute
+
+
+def normalize_schedule_times(values):
+    normalized = []
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        token = value.strip()
+        try:
+            minutes = parse_time_to_minutes(token)
+            normalized.append(f"{minutes // 60:02d}:{minutes % 60:02d}")
+        except Exception:
+            continue
+    normalized = sorted(set(normalized))
+    return normalized
+
+
+def parse_times_list_input(text):
+    items = [item.strip() for item in text.split(",") if item.strip()]
+    if not items:
+        raise ValueError("Provide at least one HH:MM value")
+    times = normalize_schedule_times(items)
+    if not times:
+        raise ValueError("No valid HH:MM values found")
+    return times
+
+
+def parse_interval_input(text):
+    raw = text.strip().lower()
+    match = re.match(r"^(?:every|interval)\s*[: ]\s*(\d+)\s*[m]?$", raw)
+    if not match:
+        match = re.match(r"^(\d+)\s*[m]?$", raw)
+    if not match:
+        raise ValueError("Expected 'every:60' or 'interval 60' or just '60'")
+    minutes = int(match.group(1))
+    if minutes < 1:
+        raise ValueError("Interval must be >= 1 minute")
+    return minutes
+
+
+def parse_days_input(text):
+    token_map = {
+        "1": 0, "MON": 0, "MONDAY": 0,
+        "2": 1, "TUE": 1, "TUESDAY": 1,
+        "3": 2, "WED": 2, "WEDNESDAY": 2,
+        "4": 3, "THU": 3, "THURSDAY": 3,
+        "5": 4, "FRI": 4, "FRIDAY": 4,
+        "6": 5, "SAT": 5, "SATURDAY": 5,
+        "7": 6, "SUN": 6, "SUNDAY": 6,
+    }
+    raw = text.strip().upper()
+    if raw in ("ALL", "TODOS", "EVERYDAY"):
+        return [0, 1, 2, 3, 4, 5, 6]
+    days = []
+    for token in [x.strip() for x in raw.split(",") if x.strip()]:
+        if token not in token_map:
+            raise ValueError(f"Unknown day token: {token}")
+        days.append(token_map[token])
+    days = normalize_schedule_days(days)
+    if not days:
+        raise ValueError("No valid days provided")
+    return days
+
+
+def parse_time_range_input(text):
+    match = re.match(r"^\s*(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})\s*$", text)
+    if not match:
+        raise ValueError("Expected format HH:MM-HH:MM")
+    start = match.group(1)
+    end = match.group(2)
+    parse_time_to_minutes(start)
+    parse_time_to_minutes(end)
+    return start, end
+
+
+def format_days(days):
+    names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    return ",".join(names[day] for day in days)
+
+
+def is_now_in_schedule(now_ts):
+    with state_lock:
+        enabled = state["schedule_enabled"]
+        days = list(state["schedule_days"])
+        mode = str(state.get("schedule_mode", "window"))
+        start = state["schedule_start"]
+        end = state["schedule_end"]
+        times = list(state.get("schedule_times", []))
+        interval_minutes = int(state.get("schedule_interval_minutes", 60))
+    if not enabled:
+        return True
+    if not days:
+        return False
+    now = datetime.fromtimestamp(now_ts)
+    if now.weekday() not in days:
+        return False
+    now_min = now.hour * 60 + now.minute
+    if mode == "times":
+        hhmm = f"{now.hour:02d}:{now.minute:02d}"
+        return hhmm in times
+    if mode == "interval":
+        interval = max(1, interval_minutes)
+        return (now_min % interval) == 0
+    start_min = parse_time_to_minutes(start)
+    end_min = parse_time_to_minutes(end)
+    if start_min <= end_min:
+        return start_min <= now_min <= end_min
+    return now_min >= start_min or now_min <= end_min
+
+
+def schedule_summary():
+    with state_lock:
+        enabled = state["schedule_enabled"]
+        days = list(state["schedule_days"])
+        mode = str(state.get("schedule_mode", "window"))
+        start = state["schedule_start"]
+        end = state["schedule_end"]
+        times = list(state.get("schedule_times", []))
+        interval_minutes = int(state.get("schedule_interval_minutes", 60))
+    if mode == "times":
+        details = f"times={times}"
+    elif mode == "interval":
+        details = f"interval_minutes={interval_minutes}"
+    else:
+        details = f"time={start}-{end}"
+    return f"enabled={enabled}, mode={mode}, days={format_days(days)}, {details}"
 
 
 def ensure_display_env():
@@ -801,6 +990,13 @@ def format_status():
         is_running = state["is_check_running"]
         consecutive_failures = state.get("consecutive_failures", 0)
         blocked_until = state.get("blocked_until", 0.0)
+        schedule_enabled = state.get("schedule_enabled", False)
+        schedule_days = list(state.get("schedule_days", []))
+        schedule_mode = str(state.get("schedule_mode", "window"))
+        schedule_start = state.get("schedule_start", "09:00")
+        schedule_end = state.get("schedule_end", "18:00")
+        schedule_times = list(state.get("schedule_times", []))
+        schedule_interval_minutes = int(state.get("schedule_interval_minutes", 60))
 
     now = time.time()
     if next_check_at and next_check_at > now:
@@ -822,6 +1018,12 @@ def format_status():
         f"last_check_at={last_check_text}\n"
         f"consecutive_failures={consecutive_failures}\n"
         f"blocked_until={blocked_until_text}\n"
+        f"schedule_enabled={schedule_enabled}\n"
+        f"schedule_mode={schedule_mode}\n"
+        f"schedule_days={format_days(schedule_days)}\n"
+        f"schedule_time={schedule_start}-{schedule_end}\n"
+        f"schedule_times={schedule_times}\n"
+        f"schedule_interval_minutes={schedule_interval_minutes}\n"
         f"next_check_in_seconds={seconds_until_next}"
     )
 
@@ -843,7 +1045,43 @@ def read_last_log_lines(max_lines=20):
 
 
 def handle_telegram_command(text, chat_id):
-    command = text.strip().split()[0].lower()
+    stripped = text.strip()
+    command = stripped.split()[0].lower() if stripped else ""
+
+    if chat_id in schedule_edit_sessions and not command.startswith("/"):
+        session = schedule_edit_sessions[chat_id]
+        try:
+            if session["stage"] == "await_days":
+                days = parse_days_input(stripped)
+                with state_lock:
+                    state["schedule_days"] = days
+                save_schedule_state()
+                schedule_edit_sessions.pop(chat_id, None)
+                send_telegram_message(f"Schedule days updated: {format_days(days)}", chat_id=chat_id)
+                return
+            if session["stage"] == "await_time":
+                with state_lock:
+                    current_mode = str(state.get("schedule_mode", "window"))
+                if current_mode == "times":
+                    times = parse_times_list_input(stripped)
+                    with state_lock:
+                        state["schedule_times"] = times
+                elif current_mode == "interval":
+                    interval_minutes = parse_interval_input(stripped)
+                    with state_lock:
+                        state["schedule_interval_minutes"] = interval_minutes
+                else:
+                    start, end = parse_time_range_input(stripped)
+                    with state_lock:
+                        state["schedule_start"] = start
+                        state["schedule_end"] = end
+                save_schedule_state()
+                schedule_edit_sessions.pop(chat_id, None)
+                send_telegram_message(f"Schedule updated: {schedule_summary()}", chat_id=chat_id)
+                return
+        except Exception as error:
+            send_telegram_message(f"Invalid input: {error}", chat_id=chat_id)
+            return
 
     if command == "/ping":
         send_telegram_message("pong", chat_id=chat_id)
@@ -859,6 +1097,78 @@ def handle_telegram_command(text, chat_id):
             state["next_check_at"] = 0.0
         check_now_event.set()
         send_telegram_message("Checker started. I will run a check now.", chat_id=chat_id)
+        return
+
+    if command in ("/menu", "/schedule_menu"):
+        send_telegram_message(
+            "Menu:\n"
+            "/schedule_show - show schedule\n"
+            "/schedule_on - enable schedule window\n"
+            "/schedule_off - disable schedule window\n"
+            "/schedule_days - set weekdays (reply: Mon,Tue or 1,2,...7)\n"
+            "/schedule_mode window|times|interval - set schedule mode\n"
+            "/schedule_time - set schedule data by mode\n"
+            "  window: HH:MM-HH:MM\n"
+            "  times: HH:MM,HH:MM,HH:MM\n"
+            "  interval: every:60\n"
+            "/check_now - run now\n"
+            "/status - checker status",
+            chat_id=chat_id,
+        )
+        return
+
+    if command == "/schedule_show":
+        send_telegram_message(f"Current schedule: {schedule_summary()}", chat_id=chat_id)
+        return
+
+    if command == "/schedule_on":
+        with state_lock:
+            state["schedule_enabled"] = True
+        save_schedule_state()
+        send_telegram_message(f"Schedule enabled: {schedule_summary()}", chat_id=chat_id)
+        return
+
+    if command == "/schedule_off":
+        with state_lock:
+            state["schedule_enabled"] = False
+        save_schedule_state()
+        send_telegram_message("Schedule disabled. Checks can run any time.", chat_id=chat_id)
+        return
+
+    if command == "/schedule_days":
+        schedule_edit_sessions[chat_id] = {"stage": "await_days"}
+        send_telegram_message(
+            "Send weekdays as Mon,Tue,Fri or 1,2,5 (1=Mon ... 7=Sun), or 'all'.",
+            chat_id=chat_id,
+        )
+        return
+
+    if command.startswith("/schedule_mode"):
+        parts = stripped.split(maxsplit=1)
+        if len(parts) < 2:
+            send_telegram_message("Usage: /schedule_mode window|times|interval", chat_id=chat_id)
+            return
+        mode = parts[1].strip().lower()
+        if mode not in ("window", "times", "interval"):
+            send_telegram_message("Invalid mode. Use: window, times, interval", chat_id=chat_id)
+            return
+        with state_lock:
+            state["schedule_mode"] = mode
+        save_schedule_state()
+        send_telegram_message(f"Schedule mode set to '{mode}'. Now use /schedule_time.", chat_id=chat_id)
+        return
+
+    if command == "/schedule_time":
+        schedule_edit_sessions[chat_id] = {"stage": "await_time"}
+        with state_lock:
+            mode = str(state.get("schedule_mode", "window"))
+        if mode == "times":
+            prompt = "Send times list as HH:MM,HH:MM,HH:MM (example: 09:00,10:00,12:30)."
+        elif mode == "interval":
+            prompt = "Send interval minutes (example: every:60 or 60)."
+        else:
+            prompt = "Send time range as HH:MM-HH:MM (example: 08:30-18:00)."
+        send_telegram_message(prompt, chat_id=chat_id)
         return
 
     if command == "/stop":
@@ -896,10 +1206,17 @@ def handle_telegram_command(text, chat_id):
             "Commands:\n"
             "/ping - health check\n"
             "/id - show current chat id\n"
+            "/menu - schedule/checker menu\n"
             "/start or /start_checker - enable checks\n"
             "/stop - disable automatic checks\n"
             "/check_now - run one check now\n"
             "/status - current state\n"
+            "/schedule_show - show schedule\n"
+            "/schedule_on - enable schedule window\n"
+            "/schedule_off - disable schedule window\n"
+            "/schedule_mode - set schedule mode\n"
+            "/schedule_days - set weekdays\n"
+            "/schedule_time - set time range\n"
             "/last_log - show last log lines\n"
             "/screenshot - send latest screenshot",
             chat_id=chat_id,
@@ -957,6 +1274,9 @@ def run_checker_loop():
             checker_enabled = state["checker_enabled"]
             next_check_at = state["next_check_at"]
             is_running = state["is_check_running"]
+            schedule_enabled = state.get("schedule_enabled", False)
+            schedule_mode = str(state.get("schedule_mode", "window"))
+            last_schedule_trigger_key = state.get("last_schedule_trigger_key", "")
 
         should_run = False
         manual_triggered = False
@@ -965,7 +1285,25 @@ def run_checker_loop():
             should_run = True
             manual_triggered = True
         elif checker_enabled and not is_running and now >= next_check_at:
-            should_run = True
+            if schedule_enabled and schedule_mode in ("times", "interval"):
+                current_key = time.strftime("%Y%m%d%H%M", time.localtime(now))
+                if is_now_in_schedule(now) and current_key != last_schedule_trigger_key:
+                    should_run = True
+                    with state_lock:
+                        state["last_schedule_trigger_key"] = current_key
+                else:
+                    with state_lock:
+                        state["next_check_at"] = now + 15
+                    time.sleep(1)
+                    continue
+            else:
+                if is_now_in_schedule(now):
+                    should_run = True
+                else:
+                    with state_lock:
+                        state["next_check_at"] = now + 60
+                    time.sleep(1)
+                    continue
 
         if not should_run:
             time.sleep(1)
@@ -1013,6 +1351,9 @@ def main():
     setup_logging()
     ensure_runtime_home()
     ensure_display_env()
+    with state_lock:
+        state["schedule_days"] = normalize_schedule_days(state.get("schedule_days", []))
+    load_schedule_state()
     set_keyboard_layout()
     config_warnings = validate_config()
     if config_warnings:
